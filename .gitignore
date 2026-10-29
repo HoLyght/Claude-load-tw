@@ -1,0 +1,4 @@
+.env
+subscription.txt
+config.yaml
+__pycache__/
