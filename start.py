@@ -36,7 +36,22 @@ def cleanup():
             child.wait()
 
 
-def make_config(subscription, secret):
+def make_config(subscription, secret, file_provider=False):
+    provider = {
+        "path": "./providers/airport.yaml",
+        "filter": os.environ.get("NODE_FILTER", "台湾.*07.*家宽"),
+        "health-check": {"enable": False},
+    }
+    if file_provider:
+        provider["type"] = "file"
+    else:
+        provider.update({
+            "type": "http",
+            "url": subscription,
+            "interval": 86400,
+            "proxy": "DIRECT",
+            "header": {"User-Agent": ["Clash.Meta"]},
+        })
     return {
         "mixed-port": 7890,
         "allow-lan": False,
@@ -47,18 +62,7 @@ def make_config(subscription, secret):
         "external-controller": "127.0.0.1:9090",
         "secret": secret,
         "profile": {"store-selected": False},
-        "proxy-providers": {
-            "airport": {
-                "type": "http",
-                "url": subscription,
-                "path": "./providers/airport.yaml",
-                "interval": 86400,
-                "proxy": "DIRECT",
-                "header": {"User-Agent": ["Clash.Meta"]},
-                "filter": os.environ.get("NODE_FILTER", "台湾.*07.*家宽"),
-                "health-check": {"enable": False},
-            }
-        },
+        "proxy-providers": {"airport": provider},
         "proxy-groups": [{
             "name": GROUP,
             "type": "select",
@@ -67,6 +71,30 @@ def make_config(subscription, secret):
         }],
         "rules": [f"MATCH,{GROUP}"],
     }
+
+
+def prepare_provider(directory, snapshot_file, secret_file):
+    if snapshot_file.is_file():
+        try:
+            snapshot = json.loads(snapshot_file.read_text(encoding="utf-8-sig"))
+        except (ValueError, OSError):
+            raise RuntimeError("固定节点配置无法读取，请检查 airport-snapshot.json。") from None
+        nodes = snapshot.get("proxies") if isinstance(snapshot, dict) else None
+        if not isinstance(nodes, list) or not nodes or not all(isinstance(node, dict) for node in nodes):
+            raise RuntimeError("airport-snapshot.json 需要包含有效的 proxies 节点列表。")
+        providers = directory / "providers"
+        providers.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (providers / "airport.yaml").write_text(
+            json.dumps({"proxies": nodes}, ensure_ascii=False), encoding="utf-8")
+        print("已加载固定节点配置，启动无需下载订阅。", flush=True)
+        return None, True
+    if not secret_file.is_file():
+        raise RuntimeError("请在 Render Secret Files 添加 airport-snapshot.json 固定节点配置。")
+    subscription = secret_file.read_text(encoding="utf-8-sig").strip()
+    parsed = urlsplit(subscription)
+    if parsed.scheme != "https" or not parsed.hostname or any(c.isspace() for c in subscription):
+        raise RuntimeError("subscription.txt 需要填写一条完整的 HTTPS Clash/Mihomo 订阅链接。")
+    return subscription, False
 
 
 def control(secret, path, value=None):
@@ -98,18 +126,13 @@ def main():
     for key in ("AUTH_KEY", "ENCRYPTION_KEY", "DATABASE_DSN"):
         if not os.environ.get(key):
             raise RuntimeError("缺少固定环境变量：" + key)
-    secret_file = Path("/etc/secrets/subscription.txt")
-    if not secret_file.is_file():
-        raise RuntimeError("请在 Render Secret Files 添加 subscription.txt。")
-    subscription = secret_file.read_text(encoding="utf-8-sig").strip()
-    parsed = urlsplit(subscription)
-    if parsed.scheme != "https" or not parsed.hostname or any(c.isspace() for c in subscription):
-        raise RuntimeError("subscription.txt 需要填写一条完整的 HTTPS Clash/Mihomo 订阅链接。")
     directory = Path("/tmp/gpt-load-mihomo")
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    subscription, file_provider = prepare_provider(
+        directory, Path("/etc/secrets/airport-snapshot.json"), Path("/etc/secrets/subscription.txt"))
     controller_secret = secrets.token_hex(24)
     config = directory / "config.yaml"
-    config.write_text(json.dumps(make_config(subscription, controller_secret), ensure_ascii=False), encoding="utf-8")
+    config.write_text(json.dumps(make_config(subscription, controller_secret, file_provider), ensure_ascii=False), encoding="utf-8")
     proxy_env = os.environ.copy()
     for key in list(proxy_env):
         if key.lower().endswith("_proxy"):
@@ -117,7 +140,7 @@ def main():
     child = subprocess.Popen(["/usr/local/bin/mihomo", "-d", str(directory), "-f", str(config)],
                              env=proxy_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     CHILDREN.append(child)
-    print("正在加载订阅并匹配指定台湾节点……", flush=True)
+    print("正在加载节点并匹配指定台湾节点……", flush=True)
     selected = None
     deadline = time.monotonic() + 100
     while time.monotonic() < deadline and not STOPPING:

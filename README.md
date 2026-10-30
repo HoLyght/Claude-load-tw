@@ -1,6 +1,6 @@
 # GPT-Load 台湾订阅出口部署
 
-这是为现有 Render 服务准备的自定义镜像源码，尚未部署，也尚未使用真实订阅验证。当前电脑未安装 Docker，容器构建与实际连通性需要在 GitHub Actions / Render 验证。
+此版本支持在 Render Secret Files 保存固定节点配置。启动时优先使用固定配置；机场订阅下载入口关闭后，服务仍可读取已保存的节点。节点本身需保持有效。
 
 镜像包含 GPT-Load 2.0.0-rc.44、Mihomo v1.19.33 和进程启动脚本。代理端口 7890 与控制端口 9090 仅供容器内部使用；Render 对外服务端口为 10000。
 
@@ -28,16 +28,18 @@ ghcr.io/你的github用户名/gpt-load-taiwan:taiwan-v1
 
 用户名与仓库名使用小写。若首次构建显示 permission_denied，请检查仓库 Actions 是否允许该工作流写入 Packages，以及是否有同名旧包限制了仓库访问。
 
-## 3. 在现有 Render 服务加入订阅 Secret File
+## 3. 在现有 Render 服务保存固定节点配置
 
 打开 https://dashboard.render.com/web/srv-dbcr452vcj2c73fjg9og/env 。
 
 Environment → Secret Files → Add Secret File：
 
-- Filename：`subscription.txt`
-- Contents：一行完整的 Clash / Mihomo HTTPS 订阅链接，不加引号。
+- Filename：`airport-snapshot.json`
+- Contents：JSON 对象，顶层为 `proxies` 数组，内容为从 Clash/Mihomo 订阅提取的原台湾节点。节点密码只保存在 Secret File 中，不上传 GitHub。
 
-保存。此操作可能先重新部署当前旧镜像，旧镜像不会使用这个文件。
+保存时可选择 Save only，待新版镜像构建完成后部署。固定配置通过 Mihomo 的 file provider 加载，不设置联网更新。节点地址、密码或订阅有效期变化时，重新导入固定配置并部署。
+
+兼容旧方案：缺少 `airport-snapshot.json` 时，仍可从 `subscription.txt` 读取 HTTPS Clash/Mihomo 订阅链接。限时下载入口应使用固定配置方案。固定配置存在但格式错误时，启动会停止。
 
 在 Environment Variables 加入：
 
@@ -58,7 +60,8 @@ NODE_FILTER=台湾.*07.*家宽
 日志预期依次出现：
 
 ```text
-正在加载订阅并匹配指定台湾节点……
+已加载固定节点配置，启动无需下载订阅。
+正在加载节点并匹配指定台湾节点……
 已选定订阅中的单个台湾节点。
 台湾出口检查通过：country=TW ip=...
 ```
@@ -87,7 +90,7 @@ http://127.0.0.1:7890
 4. 使用已有访问密钥发送一条简短 Claude 请求，并检查成功响应及请求日志。
 5. 手动重启一次，再检查启动时的台湾出口、原账号和调用结果。
 
-512 MB 免费实例同时运行两个程序，需要观察内存是否足够。Render 休眠后，每次唤醒都需要重新下载订阅并检查出口；冷启动时间可能增加。节点密码轮换会在每日订阅更新或重新部署时获取；出现节点错误时可先手动重新部署。
+512 MB 免费实例同时运行两个程序，需要观察内存是否足够。使用固定配置后，Render 每次启动直接从 Secret File 复制节点配置并检查台湾出口。旧的链接方案仍会在启动时下载订阅，并尝试每日更新。固定配置不会自动取得节点密码轮换，需从机场重新导入。
 
 ## 回退
 
