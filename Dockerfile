@@ -1,5 +1,5 @@
 FROM docker.io/metacubex/mihomo:v1.19.33 AS mihomo
-FROM ghcr.io/tbphp/gpt-load:2.0.0-rc.44
+FROM ghcr.io/tbphp/gpt-load:2.0.0-rc.59
 
 USER root
 RUN apk add --no-cache python3 curl
