@@ -11,6 +11,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare pinned upstream and token-count patch
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 \
+            https://codeload.github.com/tbphp/gpt-load/tar.gz/53a07e4932a25954dc56fbdc11e79a2796ed659f \
+            --output /tmp/gpt-load-source.tar.gz
+          echo '1f012ece56d1c0fd4de95d35c8bdd8fa025a9413304441c8f7ef79d170e1e4ca  /tmp/gpt-load-source.tar.gz' | sha256sum --check
+          mkdir upstream
+          tar -xzf /tmp/gpt-load-source.tar.gz --strip-components=1 -C upstream
+          python3 patches/apply.py upstream
       - name: Image name
         id: image
         shell: bash
@@ -26,4 +36,9 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.image.outputs.name }}:taiwan-v1
+          tags: |
+            ${{ steps.image.outputs.name }}:taiwan-v1
+            ${{ steps.image.outputs.name }}:taiwan-token-count-v1
+            ${{ steps.image.outputs.name }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
