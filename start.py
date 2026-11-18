@@ -87,14 +87,18 @@ def prepare_provider(directory, snapshot_file, secret_file):
         (providers / "airport.yaml").write_text(
             json.dumps({"proxies": nodes}, ensure_ascii=False), encoding="utf-8")
         print("已加载固定节点配置，启动无需下载订阅。", flush=True)
-        return None, True
+        dns = snapshot.get("dns", {})
+        if not isinstance(dns, dict):
+            raise RuntimeError("固定节点配置中的 dns 必须为对象。")
+        dns.pop("listen", None)
+        return None, True, dns
     if not secret_file.is_file():
         raise RuntimeError("请在 Render Secret Files 添加 airport-snapshot.json 固定节点配置。")
     subscription = secret_file.read_text(encoding="utf-8-sig").strip()
     parsed = urlsplit(subscription)
     if parsed.scheme != "https" or not parsed.hostname or any(c.isspace() for c in subscription):
         raise RuntimeError("subscription.txt 需要填写一条完整的 HTTPS Clash/Mihomo 订阅链接。")
-    return subscription, False
+    return subscription, False, {}
 
 
 def control(secret, path, value=None):
@@ -128,11 +132,14 @@ def main():
             raise RuntimeError("缺少固定环境变量：" + key)
     directory = Path("/tmp/gpt-load-mihomo")
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    subscription, file_provider = prepare_provider(
+    subscription, file_provider, dns = prepare_provider(
         directory, Path("/etc/secrets/airport-snapshot.json"), Path("/etc/secrets/subscription.txt"))
     controller_secret = secrets.token_hex(24)
     config = directory / "config.yaml"
-    config.write_text(json.dumps(make_config(subscription, controller_secret, file_provider), ensure_ascii=False), encoding="utf-8")
+    settings = make_config(subscription, controller_secret, file_provider)
+    if dns:
+        settings["dns"] = dns
+    config.write_text(json.dumps(settings, ensure_ascii=False), encoding="utf-8")
     proxy_env = os.environ.copy()
     for key in list(proxy_env):
         if key.lower().endswith("_proxy"):
