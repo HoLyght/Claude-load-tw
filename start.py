@@ -37,10 +37,12 @@ def cleanup():
 
 
 def make_config(subscription, secret, file_provider=False):
+    health = {"url": "https://www.cloudflare.com/cdn-cgi/trace",
+              "interval": 120, "timeout": 5000, "lazy": False}
     provider = {
         "path": "./providers/airport.yaml",
         "filter": os.environ.get("NODE_FILTER", "台湾.*07.*家宽"),
-        "health-check": {"enable": False},
+        "health-check": {"enable": True, **health},
     }
     if file_provider:
         provider["type"] = "file"
@@ -65,8 +67,9 @@ def make_config(subscription, secret, file_provider=False):
         "proxy-providers": {"airport": provider},
         "proxy-groups": [{
             "name": GROUP,
-            "type": "select",
-            "proxies": ["REJECT"],
+            "type": "fallback",
+            "empty-fallback": "REJECT",
+            **health,
             "use": ["airport"],
         }],
         "rules": [f"MATCH,{GROUP}"],
@@ -125,6 +128,10 @@ def verify_egress():
     print("台湾出口检查通过：country=TW ip=" + trace.get("ip", "unknown"), flush=True)
 
 
+def matched_nodes(group):
+    return {name for name in group.get("all", []) if name not in ("REJECT", "DIRECT", "COMPATIBLE")}
+
+
 def main():
     os.umask(0o077)
     for key in ("AUTH_KEY", "ENCRYPTION_KEY", "DATABASE_DSN"):
@@ -148,28 +155,25 @@ def main():
                              env=proxy_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     CHILDREN.append(child)
     print("正在加载节点并匹配指定台湾节点……", flush=True)
-    selected = None
+    allowed = set()
     deadline = time.monotonic() + 100
     while time.monotonic() < deadline and not STOPPING:
         if child.poll() is not None:
             raise RuntimeError("Mihomo 启动失败，请检查订阅格式及镜像版本。")
         try:
             group = control(controller_secret, "/proxies/" + GROUP)
-            candidates = [n for n in group.get("all", []) if n not in ("REJECT", "DIRECT", "COMPATIBLE")]
-            if candidates:
-                if len(candidates) != 1:
-                    raise RuntimeError("NODE_FILTER 匹配到多个节点，请收窄到单个节点。")
-                selected = candidates[0]
-                control(controller_secret, "/proxies/" + GROUP, {"name": selected})
+            candidates = matched_nodes(group)
+            if group.get("now") in candidates:
+                allowed = candidates
                 break
         except (OSError, ValueError):
             pass
         time.sleep(2)
     if STOPPING:
         return 0
-    if not selected:
+    if not allowed:
         raise RuntimeError("未获取到匹配节点。请检查订阅是否为 Clash/Mihomo 格式、Render 是否能下载，以及 NODE_FILTER 是否匹配节点名。")
-    print("已选定订阅中的单个台湾节点。", flush=True)
+    print(f"已匹配 {len(allowed)} 个台湾节点。", flush=True)
     verify_egress()
     app_env = os.environ.copy()
     app_env.update({"HTTPS_PROXY": PROXY, "HTTP_PROXY": PROXY,
@@ -185,7 +189,7 @@ def main():
             return app.returncode or 1
         try:
             group = control(controller_secret, "/proxies/" + GROUP)
-            if selected not in group.get("all", []) or group.get("now") != selected:
+            if group.get("now") not in allowed or group.get("now") not in matched_nodes(group):
                 raise RuntimeError("台湾节点选择已变化，正在停止 GPT-Load；请检查订阅后重新部署。")
         except (OSError, ValueError):
             raise RuntimeError("无法确认代理运行状态，正在停止 GPT-Load。") from None
